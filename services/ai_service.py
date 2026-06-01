@@ -14,13 +14,31 @@ logger = logging.getLogger("AI_Service")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 SARVAM_API_KEY = os.getenv("SARVAM_API_KEY")
 
-client = OpenAI(api_key=OPENAI_API_KEY)
-sarvam_client = SarvamAI(api_subscription_key=SARVAM_API_KEY)
+_openai_client = None
+_sarvam_client = None
+
+
+def _get_openai_client():
+    global _openai_client
+    if _openai_client is None:
+        if not OPENAI_API_KEY:
+            raise ValueError("OPENAI_API_KEY is not set in .env")
+        _openai_client = OpenAI(api_key=OPENAI_API_KEY)
+    return _openai_client
+
+
+def _get_sarvam_client():
+    global _sarvam_client
+    if _sarvam_client is None:
+        if not SARVAM_API_KEY:
+            raise ValueError("SARVAM_API_KEY is not set in .env")
+        _sarvam_client = SarvamAI(api_subscription_key=SARVAM_API_KEY)
+    return _sarvam_client
 
 
 def generate_text(prompt):
     try:
-        resp = client.chat.completions.create(
+        resp = _get_openai_client().chat.completions.create(
             model="gpt-4.1-mini",
             messages=[{"role": "user", "content": prompt}],
             max_tokens=300,
@@ -44,7 +62,7 @@ def transcribe_audio_file(file):
         with open(temp_audio_path, "wb") as f:
             shutil.copyfileobj(file.stream, f)
 
-        job = sarvam_client.speech_to_text_job.create_job(
+        job = _get_sarvam_client().speech_to_text_job.create_job(
             model="saarika:v2.5",
             with_diarization=True
         )
