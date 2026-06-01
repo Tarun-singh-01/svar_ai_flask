@@ -22,9 +22,15 @@ def home():
     return "✅ Flask AI API Running!"
 
 
-@app.route("/summarize", methods=["GET"])
+@app.route("/summarize", methods=["GET", "POST"])
 def summarize_text():
-    text = request.args.get("text")
+    text = None
+    if request.method == "POST":
+        body = request.get_json(silent=True) or {}
+        text = body.get("text")
+    else:
+        text = request.args.get("text")
+
     if not text:
         return jsonify({"error": "Missing text param"}), 400
 
