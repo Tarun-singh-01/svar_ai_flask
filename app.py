@@ -1,6 +1,12 @@
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
-from services.ai_service import generate_text, transcribe_audio_file
+from services.ai_service import (
+    generate_text,
+    transcribe_audio_file,
+    create_transcription_job,
+    get_transcription_job,
+    clear_transcription_job,
+)
 import os
 import logging
 import traceback
@@ -43,8 +49,25 @@ def transcribe_audio():
     if "file" not in request.files:
         return jsonify({"error": "file missing"}), 400
 
-    transcript = transcribe_audio_file(request.files["file"])
-    return jsonify({"transcript": transcript})
+    try:
+        job_id = create_transcription_job(request.files["file"])
+        return jsonify({"job_id": job_id, "status": "pending"}), 202
+    except Exception as e:
+        logger.error(f"Failed to start transcription job: {e}")
+        logger.error(traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/transcribe/status/<job_id>", methods=["GET"])
+def transcribe_status(job_id):
+    job = get_transcription_job(job_id)
+    if job is None:
+        return jsonify({"error": "job not found"}), 404
+
+    if job.get("status") in ("complete", "failed"):
+        clear_transcription_job(job_id)
+
+    return jsonify(job)
 
 
 def gen(title, prompt):

@@ -4,6 +4,8 @@ import glob
 import shutil
 import logging
 import traceback
+import threading
+import uuid
 from dotenv import load_dotenv
 from openai import OpenAI
 from sarvamai import SarvamAI
@@ -16,6 +18,68 @@ SARVAM_API_KEY = os.getenv("SARVAM_API_KEY")
 
 _openai_client = None
 _sarvam_client = None
+_transcription_jobs = {}
+_transcription_jobs_lock = threading.Lock()
+
+
+def create_transcription_job(file_storage):
+    job_id = str(uuid.uuid4())
+    temp_dir = os.path.join("temp_jobs", job_id)
+    os.makedirs(temp_dir, exist_ok=True)
+    filename = file_storage.filename or "audio.m4a"
+    temp_audio_path = os.path.join(temp_dir, filename)
+    file_storage.save(temp_audio_path)
+
+    with _transcription_jobs_lock:
+        _transcription_jobs[job_id] = {
+            "status": "pending",
+            "transcript": None,
+            "error": None,
+        }
+
+    thread = threading.Thread(
+        target=_run_transcription_job,
+        args=(job_id, temp_audio_path, temp_dir),
+        daemon=True,
+    )
+    thread.start()
+    return job_id
+
+
+def get_transcription_job(job_id):
+    with _transcription_jobs_lock:
+        job = _transcription_jobs.get(job_id)
+        if job is None:
+            return None
+        return dict(job)
+
+
+def clear_transcription_job(job_id):
+    with _transcription_jobs_lock:
+        _transcription_jobs.pop(job_id, None)
+
+
+def _run_transcription_job(job_id, temp_audio_path, temp_dir):
+    try:
+        with _transcription_jobs_lock:
+            if job_id in _transcription_jobs:
+                _transcription_jobs[job_id]["status"] = "processing"
+
+        transcript = transcribe_audio_path(temp_audio_path)
+
+        with _transcription_jobs_lock:
+            if job_id in _transcription_jobs:
+                _transcription_jobs[job_id]["status"] = "complete"
+                _transcription_jobs[job_id]["transcript"] = transcript
+    except Exception as e:
+        logger.error(f"Transcription job {job_id} failed: {e}")
+        logger.error(traceback.format_exc())
+        with _transcription_jobs_lock:
+            if job_id in _transcription_jobs:
+                _transcription_jobs[job_id]["status"] = "failed"
+                _transcription_jobs[job_id]["error"] = str(e)
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 def _get_openai_client():
@@ -50,17 +114,27 @@ def generate_text(prompt):
 
 
 def transcribe_audio_file(file):
+    temp_dir = "temp"
+    out_dir = os.path.join(temp_dir, "out")
+    os.makedirs(out_dir, exist_ok=True)
+    temp_audio_path = os.path.join(temp_dir, file.filename or "audio.m4a")
+    with open(temp_audio_path, "wb") as f:
+        shutil.copyfileobj(file.stream, f)
+    try:
+        return transcribe_audio_path(temp_audio_path)
+    finally:
+        if os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir)
+
+
+def transcribe_audio_path(temp_audio_path):
     logger.info("🎤 Sarvam transcription with English output start")
 
-    temp_dir = "temp"
+    temp_dir = os.path.dirname(temp_audio_path)
     out_dir = os.path.join(temp_dir, "out")
 
     try:
         os.makedirs(out_dir, exist_ok=True)
-
-        temp_audio_path = os.path.join(temp_dir, file.filename or "audio.m4a")
-        with open(temp_audio_path, "wb") as f:
-            shutil.copyfileobj(file.stream, f)
 
         job = _get_sarvam_client().speech_to_text_job.create_job(
             model="saarika:v2.5",
@@ -127,5 +201,6 @@ def transcribe_audio_file(file):
         return "Transcription error"
 
     finally:
-        if os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir)
+        out_only = os.path.join(os.path.dirname(temp_audio_path), "out")
+        if os.path.exists(out_only):
+            shutil.rmtree(out_only, ignore_errors=True)
